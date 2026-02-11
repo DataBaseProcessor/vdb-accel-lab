@@ -4,12 +4,44 @@
 
 ## 🎯 Purpose
 
-This repository is part of DataStream's DBPU (Database Processing Unit) development stack:
-- **vdb-accel-lab** ← You are here (benchmarking & workload generation)
-- **milvus-dbpu-plugin** (profiling hooks & intelligence)
-- **dbpu-runtime** (hardware offload layer)
+This repository generates workloads and analyzes performance to quantify the business value of DBPU (Database Processing Unit) acceleration.
 
-The goal is to measure the acceleration potential of offloading vector database operations (specifically FAISS scan_codes bottleneck) to custom hardware.
+**Part of DataStream's 3-layer DBPU stack:**
+- **vdb-accel-lab** ← You are here (workload generation & analysis)
+- **milvus-dbpu-plugin** (profiling hooks inside Milvus)
+- **dbpu-runtime** (hardware abstraction layer)
+
+---
+
+## 🏗️ Architecture & Data Flow
+```
+┌──────────────────────────────────┐
+│   vdb-accel-lab (This Repo)      │
+│   • Generate workloads           │
+│   • Send queries via PyMilvus    │
+│   • Analyze profiling logs       │
+│   • Calculate ROI                │
+└──────────────┬───────────────────┘
+               │ PyMilvus API
+               ▼
+┌──────────────────────────────────┐
+│   Milvus Vector Database         │
+│   + milvus-dbpu-plugin (hook)    │ ← Plugin intercepts searches
+│   • Profile FAISS operations     │
+│   • Decide: DBPU or CPU?         │
+│   • Log performance data         │
+└──────────┬───────────┬───────────┘
+           │           │
+    CPU    │           │    DBPU
+  Fallback │           │  Offload
+           ▼           ▼
+     ┌─────────┐  ┌─────────────┐
+     │  FAISS  │  │ dbpu-runtime│
+     │  (CPU)  │  │   + DBPU    │
+     └─────────┘  └─────────────┘
+```
+
+**Key Point:** This repository is a **black-box testing tool**. It doesn't need to know whether Milvus uses DBPU or CPU internally—it just sends queries and analyzes the results.
 
 ---
 
@@ -17,11 +49,11 @@ The goal is to measure the acceleration potential of offloading vector database 
 ```
 vdb-accel-lab/
 ├── workloads/              # Workload generation
-│   └── lab_gen.py         # Smart workload generator (auto-detects Milvus)
+│   └── lab_gen.py         # Smart generator (auto-detects Milvus)
 ├── analyzer/              # Analysis & visualization tools
-│   ├── visualize.py       # Performance visualization & comparison
+│   ├── visualize.py       # Performance comparison charts
 │   ├── analyze_hooks.py   # C++ profiling hook analysis
-│   ├── calculate_roi.py   # Business ROI calculator
+│   ├── calculate_roi.py   # Business case calculator
 │   └── export_metrics.py  # Prometheus metrics exporter
 ├── dashboards/            # Grafana dashboards (future)
 ├── docs/                  # Documentation
@@ -36,8 +68,10 @@ vdb-accel-lab/
 
 ### Prerequisites
 - Python 3.8+
-- Milvus 2.4+ (optional - will use mock mode if unavailable)
-- Docker (optional, for local Milvus)
+- Milvus 2.4+ (any of these configurations):
+  - **Vanilla Milvus** (baseline, no acceleration)
+  - **Milvus + milvus-dbpu-plugin** (with profiling)
+  - **Full DBPU stack** (with hardware acceleration)
 
 ### Installation
 ```bash
@@ -47,7 +81,7 @@ cd vdb-accel-lab
 
 # Setup virtual environment
 python3 -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate
 
 # Install dependencies
 pip install -r requirements.txt
@@ -57,54 +91,59 @@ pip install -r requirements.txt
 
 ## 🧪 Usage
 
-### 1. Generate Workload Data
+### Three Testing Modes
 
-The workload generator **automatically detects** if Milvus is available:
-- ✅ **Milvus available** → Runs real vector searches
-- 🎭 **Milvus unavailable** → Uses mock mode with realistic timings
+#### Mode 1: Mock Testing (No Milvus Required)
 ```bash
-# Run workload (auto-detects Milvus)
+# Auto-detects no Milvus → uses mock data
 python workloads/lab_gen.py
-
-# For remote Milvus
-MILVUS_HOST=192.168.1.15 python workloads/lab_gen.py
-
-# Check generated logs
-tail -f /tmp/dbpu-knowhere.jsonl
+# Output: 🎭 Running in MOCK mode
 ```
 
-**Output:**
-```
-✅ Milvus detected - Running in REAL mode
-🚀 DBPU Acceleration Lab - Smart Workload Generator
-   Mode: REAL
-
-Setting up real Milvus collection...
-Inserting 10000 vectors (dim=128)...
-✅ Real data inserted
-
-============================================================
-Testing: HNSW_Normal (HNSW)
-============================================================
-Creating index: {'M': 16, 'efConstruction': 200}
-✅ Latency: 57.63 ms (REAL)
-...
-```
-
-### 2. Visualize Performance
+#### Mode 2: Baseline Testing (Vanilla Milvus)
 ```bash
-# Generate visual analysis
+# Start vanilla Milvus
+docker run -d --name milvus-standalone \
+  -p 19530:19530 \
+  milvusdb/milvus:latest standalone
+
+# Run workload
+python workloads/lab_gen.py
+# Output: ✅ Milvus detected - Running in REAL mode
+# Note: No profiling logs, only Python-side latency
+```
+
+#### Mode 3: Profiling Mode (Milvus + Plugin)
+```bash
+# Start Milvus with milvus-dbpu-plugin
+docker run -d --name milvus-dbpu \
+  -p 19530:19530 \
+  -v /tmp:/tmp \
+  milvus-dbpu:latest standalone
+
+# Run workload
+python workloads/lab_gen.py
+# Output: Plugin generates /tmp/dbpu-knowhere.jsonl
+
+# Analyze C++ profiling data
+python analyzer/analyze_hooks.py
+```
+
+---
+
+## 📊 Analysis Pipeline
+
+### Step 1: Generate Workload Data
+```bash
+python workloads/lab_gen.py
+```
+
+### Step 2: Visualize Performance
+```bash
 python analyzer/visualize.py
 ```
-
 **Output:**
 ```
-📊 DBPU ACCELERATION POTENTIAL ANALYSIS
-================================================================================
-Mode: REAL
-Time: 2026-02-11T10:01:10.483979
-Total tests: 3
-
 📈 Performance Comparison
 --------------------------------------------------------------------------------
 Index Type      Label                Latency (ms)    Bar Chart
@@ -113,215 +152,147 @@ HNSW            HNSW_Normal               57.63      █████████
 IVF_FLAT        IVF_Normal               117.91      ███████████████████
 FLAT            Flat_Scan                299.28      ██████████████████████████████████████████████████
 
-🚀 Acceleration Potential
---------------------------------------------------------------------------------
-Baseline (FLAT scan):         299.28 ms
-
 💡 DBPU Acceleration Scenarios:
    10x DBPU acceleration → FLAT would be ~29.93ms
       → 1.93x better than current best!
-   20x DBPU acceleration → FLAT would be ~14.96ms
-      → 3.85x better than current best!
-
-💰 Market opportunity: FLAT scan has 5.19x room for improvement
 ```
 
-### 3. Analyze C++ Profiling Hooks
-
-Analyzes detailed FAISS operation timings (scan_codes bottleneck):
+### Step 3: Analyze C++ Profiling Hooks
+*Requires Milvus with milvus-dbpu-plugin*
 ```bash
 python analyzer/analyze_hooks.py
 ```
-
 **Output:**
 ```
 🔬 FAISS OPERATION BREAKDOWN (C++ Profiling)
-================================================================================
 
 Index Type      Avg Total (ms)     Avg scan_codes (ms)     % of Total   Bottleneck?
 --------------------------------------------------------------------------------
 FLAT                  300.00               285.00             95.0%      🔥 YES
 IVF_FLAT              120.00                95.00             79.2%      🔥 YES
 HNSW                   50.00                 5.00             10.0%      ✅ No
-
-🚀 DBPU ACCELERATION POTENTIAL
-
-FLAT Analysis:
-Current Performance:  300.00ms
-scan_codes Time:      285.00ms (95.0%)
-🎯 HIGH PRIORITY - scan_codes is the bottleneck!
-   10x DBPU → 43.50ms (overall 6.90x speedup)
-   20x DBPU → 29.25ms (overall 10.26x speedup)
 ```
 
-### 4. Calculate Business ROI
+### Step 4: Calculate Business ROI
 ```bash
 python analyzer/calculate_roi.py
 ```
-
 **Output:**
 ```
-📈 PERFORMANCE ROI ANALYSIS
-================================================================================
-
-FLAT:
-  Current:        300.00ms per query
-  With 10x DBPU:   43.50ms per query (6.90x faster)
-  Throughput:      6.90x more queries/second
-
 💰 INFRASTRUCTURE COST SAVINGS
-================================================================================
-Current Infrastructure:
-  100 GPU servers × $30,000/year = $3,000,000/year
-
-With DBPU (5x speedup):
-  20 DBPU servers × $40,000/year = $800,000/year
-
-💵 Annual Savings: $2,200,000/year (73.3% reduction)
-📊 3-Year Savings: $6,600,000
-
-🌍 MARKET OPPORTUNITY
-  • TAM: $300M (vector database acceleration market)
-  • Revenue (Year 3): $15M - $60M
-  • Exit Value: $500M - $1B
-  • Investor Returns: 12-24x
+Current: 100 GPU servers × $30K/year = $3M/year
+With DBPU: 20 servers × $40K/year = $800K/year
+💵 Annual Savings: $2.2M/year (73% reduction)
 ```
 
-### 5. Export Prometheus Metrics
-
-Start metrics exporter for Grafana/Prometheus integration:
+### Step 5: Export Prometheus Metrics
 ```bash
-# Start exporter (runs on port 9090)
 python analyzer/export_metrics.py
-
-# Check metrics
-curl http://localhost:9090/metrics
-
-# View dashboard
-open http://localhost:9090/
+# Server starts on http://localhost:9090/metrics
 ```
 
-**Prometheus Configuration:**
-```yaml
-scrape_configs:
-  - job_name: 'dbpu'
-    static_configs:
-      - targets: ['localhost:9090']
-```
+---
 
-**Sample Metrics:**
-```
-# HELP dbpu_search_latency_ms Average search latency in milliseconds
-# TYPE dbpu_search_latency_ms gauge
-dbpu_search_latency_ms{index_type="FLAT"} 300.00
-dbpu_search_latency_ms{index_type="IVF_FLAT"} 120.00
-dbpu_search_latency_ms{index_type="HNSW"} 50.00
+## 🔗 Integration with Other Components
 
-# HELP dbpu_acceleration_potential Potential speedup with 10x DBPU
-# TYPE dbpu_acceleration_potential gauge
-dbpu_acceleration_potential{index_type="FLAT"} 6.90
-dbpu_acceleration_potential{index_type="IVF_FLAT"} 4.21
+### What Each Component Does
+
+| Component | Role | When It's Used |
+|-----------|------|----------------|
+| **vdb-accel-lab** (this repo) | Generates workloads, analyzes results | Always (works in mock/real/profiling modes) |
+| **milvus-dbpu-plugin** | Profiles Milvus internals, decides offload | Optional (for detailed profiling) |
+| **dbpu-runtime** | Executes on DBPU hardware | Optional (for actual acceleration) |
+
+### Full Stack Setup
+```bash
+# 1. Build Milvus with plugin
+cd milvus-dbpu-plugin
+./scripts/build_milvus_with_plugin.sh
+
+# 2. Start Milvus
+docker run -d milvus-dbpu:latest standalone
+
+# 3. Run benchmarks
+cd vdb-accel-lab
+python workloads/lab_gen.py
+
+# 4. Analyze results
+python analyzer/analyze_hooks.py
+python analyzer/calculate_roi.py
 ```
 
 ---
 
 ## 🔬 What Gets Measured
 
-### Workload Generator (`lab_gen.py`)
-- **Python-side latency**: End-to-end search time from client perspective
-- **Index types**: HNSW, IVF_FLAT, FLAT (full scan)
-- **Workload parameters**: 10K vectors, 128 dimensions, 10 queries per test
+### Python-Side Metrics (Always Available)
+- End-to-end search latency
+- Throughput (queries/second)
+- Index-specific performance (HNSW, IVF, FLAT)
 
-### Hook Analyzer (`analyze_hooks.py`)
-- **C++ profiling data**: Detailed FAISS internal timings
-- **scan_codes bottleneck**: Time spent in distance computation hotspot
-- **Bottleneck percentage**: Which indexes are dominated by scan_codes
-- **Acceleration potential**: Projected speedup with DBPU offload
+### C++ Profiling Metrics (Requires Plugin)
+- FAISS internal timing breakdown
+- scan_codes bottleneck percentage
+- Memory access patterns
+- Acceleration potential calculation
 
-### ROI Calculator (`calculate_roi.py`)
-- **Performance gains**: Throughput improvements (queries/sec)
-- **Cost savings**: Infrastructure reduction (GPU → DBPU migration)
-- **Market opportunity**: TAM analysis for vector DB acceleration
-- **Investment returns**: Revenue projections and exit multiples
-
----
-
-## 📊 Complete Workflow
-```bash
-# 1. Generate benchmark data
-python workloads/lab_gen.py
-
-# 2. Visualize performance comparison
-python analyzer/visualize.py
-
-# 3. Analyze C++ profiling hooks
-python analyzer/analyze_hooks.py
-
-# 4. Calculate business case
-python analyzer/calculate_roi.py
-
-# 5. Export metrics for monitoring
-python analyzer/export_metrics.py &
-
-# 6. View real-time metrics
-curl http://localhost:9090/metrics
-```
+### Business Metrics (Always Available)
+- Performance improvement ratios
+- Infrastructure cost savings
+- Market opportunity sizing
+- Investment return projections
 
 ---
 
 ## 🏠 Remote/Home Setup
-
-If your office and home computers are on the same network:
 ```bash
 # On office computer (find IP)
-ipconfig getifaddr en0  # Mac WiFi
-# Example output: 192.168.1.15
+ipconfig getifaddr en0  # Mac: 192.168.1.15
 
-# On home computer (connect)
+# On home computer
 export MILVUS_HOST=192.168.1.15
 python workloads/lab_gen.py
 ```
 
-See [docs/SETUP.md](docs/SETUP.md) for detailed remote setup instructions.
+See [docs/SETUP.md](docs/SETUP.md) for detailed instructions.
 
 ---
 
 ## 🎯 Development Roadmap
 
-### Phase 1: Benchmarking (Current)
-- [x] Smart workload generator with auto-detection
+### Phase 1: Benchmarking Framework ✅
+- [x] Smart workload generator (mock/real modes)
 - [x] Performance visualization
-- [x] C++ hook analysis (mock data ready)
+- [x] C++ hook analysis (mock data support)
 - [x] ROI calculator
-- [x] Prometheus metrics exporter
+- [x] Prometheus exporter
 
-### Phase 2: Real Profiling Integration
-- [ ] Milvus with C++ profiling hooks
-- [ ] Real FAISS scan_codes timing capture
-- [ ] Hardware performance counters
-- [ ] Power consumption metrics
+### Phase 2: Real Profiling Integration 🚧
+- [ ] Test with milvus-dbpu-plugin
+- [ ] Validate C++ hook data format
+- [ ] Correlate Python and C++ metrics
+- [ ] Automated regression testing
 
-### Phase 3: DBPU Prototype
-- [ ] FPGA/ASIC prototype integration
-- [ ] Hardware-accelerated scan_codes
-- [ ] End-to-end latency measurements
-- [ ] Production deployment testing
+### Phase 3: DBPU Hardware Testing
+- [ ] FPGA prototype benchmarking
+- [ ] Power consumption measurement
+- [ ] End-to-end latency validation
+- [ ] Production workload simulation
 
-### Phase 4: Production Ready
-- [ ] Customer pilots
-- [ ] Grafana dashboards
-- [ ] Automated CI/CD benchmarking
-- [ ] Performance regression detection
+### Phase 4: Production Deployment
+- [ ] Customer pilot benchmarking
+- [ ] Grafana dashboard templates
+- [ ] CI/CD integration
+- [ ] Performance SLA validation
 
 ---
 
 ## 🤝 Contributing
 
-This is a proprietary repository for DataStream Inc. Internal contributors should:
-1. Create feature branches from `main`
-2. Add comprehensive tests for new analyzers
-3. Update this README for new tools
-4. Use GitHub Desktop or conventional git workflow
+Internal contributors:
+1. Test against all three Milvus configurations
+2. Maintain mock mode compatibility
+3. Add new index types to test suite
+4. Document new metrics in analyzer/
 
 ---
-
